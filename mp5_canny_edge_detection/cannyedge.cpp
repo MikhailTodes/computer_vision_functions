@@ -1,0 +1,281 @@
+//compile code -> g++ cannyedge.cpp -o cannyedge.e `pkg-config --cflags --libs opencv`
+
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp> 
+#include "opencv/cv.h"
+#include <iostream>
+#include <string>
+#include <ctype.h>
+#include <math.h>
+
+
+
+using namespace std;
+using namespace cv;
+
+Mat GaussSmoothing (Mat I, int N, int Sigma);//N must be odd
+Mat ImageGradient (Mat S);//Returns Mag, Theta as first two colours ina colour matrix
+long int FindThreshold (Mat Mag, int percentageOfNonEdge);
+Mat NonmaximaSupress (Mat MagAndTheta);
+float rad2deg(float radians);//Outputs degrees
+Mat EdgeLinking(long int T_low, long int T_high, Mat NMS);
+Mat RecursionCheck (int i, int j, Mat pixels, Mat NMS, int T_low);
+
+int main()
+{
+  Mat input = imread("lena.bmp");
+  Mat gaussSmooth = GaussSmoothing(input, 3, 2);//N must be odd
+  
+  Mat MagAndTheta = ImageGradient (gaussSmooth);
+  long int T_high = FindThreshold(MagAndTheta, 80);
+  cout << T_high << "\n";
+  Mat edgeLink = NonmaximaSupress (MagAndTheta);
+
+
+
+  Mat edgelink = EdgeLinking((T_high*0.5), T_high, edgeLink);
+  imshow ("Lena", input); 
+  imshow ("EdgeLink.bmp", edgeLink);
+
+
+
+  while (true){//stay open till any key is pressed
+    if(waitKey()>0){break;}
+  }
+  
+  return 0;
+}
+
+
+Mat GaussSmoothing (Mat I, int N, int Sigma){
+
+  float A[N+1][N+1], B[N+1][N+1], weight = 0;
+  float Gmat[N+1][N+1], kernal[N+1][N+1];
+  for (int i = 0; i < N+1; i ++){
+    for (int j = 0; j< N+1; j ++){
+      A[i][j]= -(N/2) + j;
+      B[i][j]= -(N/2) + i;
+    }
+  }  
+  for (int i = 0; i < N+1; i ++){
+    for (int j = 0; j< N+1; j ++){
+      Gmat[i][j] = exp(-1*((A[i][j]*A[i][j])+(B[i][j]*B[i][j]))/(2*(Sigma*Sigma)));//Create Gausian Dist Matrix
+    }
+  }
+  for (int i = 0; i < N+1; i ++){
+    for (int j = 0; j< N+1; j ++){
+      kernal[i][j] = Gmat[i][j]/Gmat[0][0];//Multiply by a corner value
+      weight += kernal[i][j];//Save a total to normalise after
+    }
+  }
+  for (int i = 0; i < N+1; i ++){
+    for (int j = 0; j< N+1; j ++){
+      kernal[i][j] = kernal[i][j]/weight;//normalise
+    }
+  }
+  Mat out = I.clone();
+  int sumPix = 0;  
+  //***********SETTING OUTPUT IMAGE TO NEW VALUES****************
+  for( int y = N; y < I.rows-N; y++ ) {
+    for( int x = N; x < I.cols-N; x++ ) {       
+      sumPix = 0;
+      for (int i = 0; i < N+1; i++){
+	for (int j = 0; j < N+1; j++){
+	  sumPix = sumPix + I.at<Vec3b>((y-(N/2)+i),(x-(N/2)+j))[0]*kernal[i][j];
+	}
+      }
+      out.at<Vec3b>(y,x) = Vec3b(sumPix,sumPix,sumPix);    
+    }
+  }GaussianBlur(I,out,Size(N,N),Sigma,Sigma);
+  //************************************************************
+  
+ 
+  return out;
+}
+
+
+Mat ImageGradient (Mat S){//Returns Mag, Theta as first two colours ina colour matrix
+  int Mag[S.rows][S.cols];
+  //int *magPoint = &Mag;
+  float Theta[S.rows][S.cols];//Create arrays to store Mag and Theta
+  //int *thetPoint = &Theta;
+  float Gx, Gy;
+  //**********************FIND IMAGE GRADIENT******************
+  for( int y = 0; y < S.rows-2; y++ ) {
+    for( int x = 0; x < S.cols-2; x++ ) {   //Loop through whole image with padding
+      //Find the partial derivatives for each pixel --> SOBEL
+      Gx = (S.at<Vec3b>((y+2), (x+2))[0]) -(S.at<Vec3b>((y), (x+2))[0]) + 2*((S.at<Vec3b>((y+2), (x+1))[0])-(S.at<Vec3b>((y), (x+1))[0])) +(S.at<Vec3b>((y+2), (x))[0]) - (S.at<Vec3b>((y), (x))[0]);
+
+      Gy = (S.at<Vec3b>((y), (x+2))[0]) -(S.at<Vec3b>((y), (x))[0]) + 2*((S.at<Vec3b>((y+1), (x+2))[0])-(S.at<Vec3b>((y+1), (x))[0])) +(S.at<Vec3b>((y+2), (x+2))[0]) - (S.at<Vec3b>((y+2), (x))[0]);
+
+      //Save the mag and theta values for each pixel
+      Mag[y][x] = sqrt((Gx*Gx)+(Gy*Gy));
+      Theta[y][x] = rad2deg(atan2(Gy,Gx));
+    }
+  }  
+  //**********************************************************
+  Mat out (S.rows, S.cols, CV_16SC3);//Need it bigger and signed to store above 255 and negatives
+  Mat mag = S.clone();
+  //********Returning the Mag and Theta array as the first two colours of an image matrix*****
+  for( int y = 0; y < S.rows; y++ ) {
+    for( int x = 0; x < S.cols; x++ ) { 
+      out.at<Vec3b>(y,x) = Vec3b(Mag[y][x],Theta[y][x],Mag[y][x]);//Mag is colour 1 and Theta is colour 2
+      mag.at<Vec3b>(y,x) = Vec3b(Mag[y][x],Mag[y][x],Mag[y][x]);
+    }
+  }
+  //imwrite ("Magnitude.bmp", mag);
+  
+  //*****************************************************************************************  
+  return out;
+}
+
+
+long int FindThreshold (Mat Mag, int percentageOfNonEdge){//Returns the T_low and T_high threshold values
+  //Find the maximum Mag value --> first colour of the Mag image Mat
+  int maxMag = 0;
+  for( int y = 0; y < Mag.rows; y++ ) {
+    for( int x = 0; x < Mag.cols; x++ ) { 
+      if (Mag.at<Vec3b>(y,x)[0] > maxMag){
+	maxMag = Mag.at<Vec3b>(y,x)[0];
+      }
+    }
+  }  
+
+  long int histo[maxMag];
+  float tot = Mag.rows*Mag.cols;
+  //*****************Find the histo*****************
+  for( int y = 0; y < Mag.rows; y++ ) {
+    for( int x = 0; x < Mag.cols; x++ ) { 
+      histo[Mag.at<Vec3b>(y,x)[0]]++;
+    }
+  }
+  //************************************************
+
+  //Find the cumsum 
+  long unsigned int cumsum[maxMag];
+  cumsum[0] = histo[0];
+  float thresh = tot*(percentageOfNonEdge*0.01);  
+  for(int i = 1; i < maxMag; i++) {    
+    cumsum[i] = histo[i]+cumsum[i-1];
+    //cout << cumsum[i]<<"\n";
+    if (cumsum[i] > thresh){
+      long int T_high = i;
+      //cout << T_high;
+      return T_high;
+    }    
+  }
+  
+  return 0;
+}
+
+
+Mat NonmaximaSupress (Mat MagAndTheta){
+  Mat out(MagAndTheta.rows, MagAndTheta.cols, CV_8UC3);
+  
+  for( int y = 0; y < out.rows; y++ ) {
+    for( int x = 0; x < out.cols; x++ ) { 
+      out.at<Vec3b>(y,x) = Vec3b(0,0,0);      
+    }
+  }
+  
+  for( int y = 1; y < MagAndTheta.rows-1; y++ ) {
+    for( int x = 1; x < MagAndTheta.cols-1; x++ ) {
+      int pixel =  MagAndTheta.at<Vec3b>(y,x)[0];
+      float dir = MagAndTheta.at<Vec3b>(y,x)[1];
+      int t = 100;
+
+      //(Case 0).
+      if ((-22.5 < dir <= 22.5) || (157.5 < dir <= 180) || (-180 < dir <= -157.5)){
+	if ((pixel >= MagAndTheta.at<Vec3b>((y), (x-1))[0]) && (pixel > MagAndTheta.at<Vec3b>((y), (x+1))[0])){
+	  if (pixel> t){ out.at<Vec3b>(y,x) = Vec3b(pixel,pixel,pixel);	}  
+	}else{out.at<Vec3b>(y,x) = Vec3b(0,0,0);};
+      }
+      //(case 1).
+      else if ((22.5 < dir <= 67.5) || (-157.5 < dir <= 112.5)){
+	if ((pixel >= MagAndTheta.at<Vec3b>((y - 1), (x + 1))[0]) && (pixel >= MagAndTheta.at<Vec3b>((y + 1), (x - 1))[0])){
+	  if (pixel> t){out.at<Vec3b>(y,x) = Vec3b(pixel,pixel,pixel);}
+	}else{out.at<Vec3b>(y,x) = Vec3b(0,0,0);};
+      }
+      //(case 2).
+      else if ((-112.5 < dir <= -67.5) || (67.5 < dir <= 112.5)){
+	if ((pixel >= MagAndTheta.at<Vec3b>((y - 1), (x))[0]) && (pixel >= MagAndTheta.at<Vec3b>((y + 1), (x))[0])){
+	  if (pixel> t){out.at<Vec3b>(y,x) = Vec3b(pixel,pixel,pixel);}
+	}else{out.at<Vec3b>(y,x) = Vec3b(0,0,0);};
+      }
+      //(case 3).
+      else if ((-67.5 < dir <= -22.5) || (112.5 < dir <= 157.5)){
+	if ((pixel >= MagAndTheta.at<Vec3b>((y-1), (x - 1))[0]) && (pixel >= MagAndTheta.at<Vec3b>((y+1), (x + 1))[0])){
+	  if (pixel> t){ out.at<Vec3b>(y,x) = Vec3b(pixel,pixel,pixel);}
+	}else{out.at<Vec3b>(y,x) = Vec3b(0,0,0);};
+      }  
+      
+    }
+  }
+
+  return out;
+}
+
+
+float rad2deg(float radians){//Outputs degrees
+  return  ((radians*180) / 3.14159); 
+}
+
+
+Mat RecursionCheck (int i, int j, Mat pixels, Mat NMS, int T_low){
+  pixels.at<uchar>(i,j) = 1;
+  for (int m = -1; m < 2; m++){
+    for (int n = -1; n<2; n++){
+      try
+	{
+	  if(NMS.at<Vec3b>(i+m,j+n)[0]>T_low && pixels.at<uchar>(i+m,j+n)==0){
+	    pixels = RecursionCheck(i+m, j+n, pixels, NMS, T_low);
+	  }
+	}catch(...)
+	{
+	}
+    }
+  }
+  return pixels;
+}
+
+
+Mat EdgeLinking(long int T_low, long int T_high, Mat NMS){
+  
+  int nmsMax = 0;
+  
+  for( int y = 0; y < NMS.rows; y++ ) {
+    for( int x = 0; x < NMS.cols; x++ ) { 
+      if(NMS.at<Vec3b>(y,x)[0]>nmsMax){
+	nmsMax = NMS.at<Vec3b>(y,x)[0];
+      }
+    }
+  }
+  
+  T_high = (90*nmsMax)/100;T_low = 0.5*T_high;
+
+  Mat pixels(NMS.rows, NMS.cols, CV_8UC1);
+
+   
+  for( int y = 0; y < NMS.rows; y++ ) {
+    for( int x = 0; x < NMS.cols; x++ ) { 
+      if (NMS.at<Vec3b>(y,x)[0] > T_high){
+	pixels = RecursionCheck(y, x, pixels, NMS, T_low);
+      }
+    }
+  }
+  
+
+  Mat out = NMS.clone();
+
+  for( int y = 0; y < NMS.rows; y++ ) {
+    for( int x = 0; x < NMS.cols; x++ ) { 
+      if(pixels.at<uchar>(y,x)==1){
+	out.at<Vec3b>(y,x) = Vec3b(255,255,255);
+      }
+      else{
+	out.at<Vec3b>(y,x) = Vec3b(0,0,0);
+      }
+    }
+  }
+  return out;
+}
